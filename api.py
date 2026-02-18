@@ -12,20 +12,19 @@ ASCII_ART = r"""
     ┌──────────────────────────────────────────────────────────────────────────┐
     │   _______   _______   ___   _______   __   __   _______   __    _        │
     │  |       | |       | |   | |       | |  | |  | |       | |  |  | |       │
-    │  |    _  | |    _  | |   | |    _  | |  |_|  | |    _  | |   |_| |       │
-    │   >> UNHACKERENCAPITAL | FLOWGPT BYPASS | GUEST LOOP v6.0 <<             │
+    │   >> UNHACKERENCAPITAL | FLOWGPT BYPASS | SMART WAITER v6.1 <<           │
     └──────────────────────────────────────────────────────────────────────────┘
 """
 app = Flask(__name__)
 API_KEY_GATEWAY = "UnHackerEnCapital"
 
-# URL DEL BOT (WormGPT v6)
+# URL DEL BOT
 TARGET_URL = "https://flowgpt.com/chat/wormgpt-6"
 
-# Memoria de conversación (para inyectar contexto y que el bot no olvide)
+# Memoria de conversación
 CHAT_MEMORY = [] 
 
-# Variables globales del navegador
+# Variables globales
 BROWSER_INSTANCE = {
     "browser": None,
     "playwright": None,
@@ -46,26 +45,20 @@ def get_lan_ip():
     except Exception:
         return "127.0.0.1"
 
-# --- MOTOR DE NAVEGACIÓN EFÍMERA ---
+# --- MOTOR DE NAVEGACIÓN ---
 async def iniciar_motor_base():
-    """Arranca el navegador base, pero NO abre página todavía."""
     p = await async_playwright().start()
-    # headless=False para que veas si Cloudflare pide click, puedes cambiarlo a True luego
+    # Mantenemos headless=False para evadir mejor las detecciones
     browser = await p.chromium.launch(headless=False) 
     BROWSER_INSTANCE["playwright"] = p
     BROWSER_INSTANCE["browser"] = browser
     print("[*] Motor Chromium listo. Esperando peticiones...")
 
 async def procesar_mensaje_con_bypass(mensaje_usuario):
-    """
-    Estrategia: Abre un contexto NUEVO para cada mensaje (Bypass de créditos).
-    Inyecta el historial anterior para no perder el hilo.
-    """
     browser = BROWSER_INSTANCE["browser"]
     if not browser: return "Error: Motor no iniciado."
 
-    # 1. Crear contexto VIRGEN (Incognito total)
-    # Esto borra cookies y localStorage, FlowGPT piensa que eres un usuario nuevo = Créditos Gratis.
+    # 1. Crear contexto VIRGEN (Incognito)
     context = await browser.new_context(
         viewport={'width': 1280, 'height': 720},
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -74,18 +67,21 @@ async def procesar_mensaje_con_bypass(mensaje_usuario):
 
     try:
         # 2. Navegar
-        # print(f"[*] Conectando como nuevo invitado...")
         await page.goto(TARGET_URL, timeout=60000)
         
-        # 3. Esperar carga e ignorar modales de bienvenida
+        # 3. Esperar carga inicial
         await page.wait_for_selector("textarea", timeout=30000)
         
-        # 4. PREPARAR EL PROMPT CON MEMORIA INYECTADA
-        # Como es una sesión nueva, el bot no sabe qué dijiste antes. Se lo recordamos.
+        # --- CORRECCIÓN CLAVE: CONTAR MENSAJES INICIALES ---
+        # Contamos cuántas burbujas de texto hay ANTES de hablar (generalmente 1: la bienvenida)
+        msgs_iniciales = await page.locator(".flowgpt-markdown").count()
+        # ---------------------------------------------------
+
+        # 4. Inyectar Contexto (Memoria)
         prompt_final = ""
         if len(CHAT_MEMORY) > 0:
-            historial_txt = "\n".join([f"User: {m['user']}\nYou: {m['bot']}" for m in CHAT_MEMORY[-3:]]) # Solo los ultimos 3 para no saturar
-            prompt_final = f"(System Note: This is a continuing conversation. Previous context:\n{historial_txt})\n\nUser: {mensaje_usuario}"
+            historial_txt = "\n".join([f"User: {m['user']}\nYou: {m['bot']}" for m in CHAT_MEMORY[-2:]]) 
+            prompt_final = f"(Context: {historial_txt})\n\nUser: {mensaje_usuario}"
         else:
             prompt_final = mensaje_usuario
 
@@ -94,37 +90,42 @@ async def procesar_mensaje_con_bypass(mensaje_usuario):
         await page.fill("textarea", prompt_final)
         await page.keyboard.press("Enter")
 
-        # 6. Esperar Respuesta
-        # print("... Esperando generación ...")
-        # Esperamos a que aparezca al menos un markdown de respuesta
-        # Nota: En sesión nueva, suele haber un mensaje de bienvenida del bot, la respuesta real es la 2da o la ultima.
+        # 6. ESPERA INTELIGENTE (Bucle de detección)
+        # Esperamos hasta que haya MÁS mensajes que al principio
+        print("... Esperando generación de respuesta ...")
         
-        # Damos tiempo al stream
-        await asyncio.sleep(4) 
+        max_retries = 30 # 30 segundos máx
+        respuesta_final = ""
         
-        # Buscamos el último mensaje generado
-        respuestas = page.locator(".flowgpt-markdown")
-        count = await respuestas.count()
-        
-        # Reintentar si no ha respondido (lag)
-        if count == 0:
-            await asyncio.sleep(3)
-            respuestas = page.locator(".flowgpt-markdown")
-            count = await respuestas.count()
-
-        if count > 0:
-            texto_respuesta = await respuestas.nth(count - 1).inner_text()
+        for _ in range(max_retries):
+            await asyncio.sleep(1)
+            msgs_actuales = await page.locator(".flowgpt-markdown").count()
             
-            # Limpieza: A veces el bot repite el contexto, lo limpiamos si es necesario.
-            # Guardamos en memoria RAM para la proxima vuelta
-            CHAT_MEMORY.append({"user": mensaje_usuario, "bot": texto_respuesta})
-            
-            # CERRAR CONTEXTO INMEDIATAMENTE PARA MATAR LA SESIÓN
+            if msgs_actuales > msgs_iniciales:
+                # ¡Detectamos un mensaje nuevo!
+                
+                # Esperamos 2 segundos extra para que termine de escribirse el texto (streaming)
+                await asyncio.sleep(2)
+                
+                # Obtenemos el texto del ÚLTIMO mensaje
+                ultimo_elemento = page.locator(".flowgpt-markdown").nth(msgs_actuales - 1)
+                texto = await ultimo_elemento.inner_text()
+                
+                # VALIDACIÓN EXTRA: Si el texto sigue siendo la bienvenida (por error), ignoramos
+                if "Never need pay for WormGPT" in texto or "start with your fist need" in texto:
+                    continue # Sigue esperando
+                
+                respuesta_final = texto
+                break
+        
+        if respuesta_final:
+            # Guardamos en memoria
+            CHAT_MEMORY.append({"user": mensaje_usuario, "bot": respuesta_final})
             await context.close()
-            return texto_respuesta
+            return respuesta_final
         else:
             await context.close()
-            return "Error: El bot no generó texto (Posible bloqueo de IP o Cloudflare)."
+            return "Error: El bot no generó una respuesta nueva (Timeout)."
 
     except Exception as e:
         await context.close()
@@ -154,18 +155,18 @@ def apithon_gateway():
     
     return jsonify({
         "choices": [{"message": {"role": "assistant", "content": output_text}}], 
-        "model": "flowgpt-bypass-v6"
+        "model": "flowgpt-bypass-v6.1"
     })
 
-# --- INTERFAZ DE CONSOLA ---
+# --- CONSOLA ---
 def run_interactive_shell():
-    print("\n[+] MODO CHAT BYPASS ACTIVADO (Sin Login).")
-    print("[!] Nota: Cada mensaje abre una sesión nueva. Puede ser un poco más lento.")
+    print("\n[+] MODO CHAT BYPASS v6.1 (Ignora Bienvenida).")
     while True:
         user_input = input("\n👤 Tú: ")
         if user_input.lower() in ['salir', 'exit']: break
-        print("⏳ Reencarnando sesión y enviando contexto...", end="", flush=True)
+        print("⏳ Enviando (Nueva Sesión)...", end="", flush=True)
         resp = ejecutar_request(user_input)
+        # Limpiamos caracteres raros si los hay
         print(f"\r🤖 WormGPT: {resp}")
 
 # --- MAIN ---
@@ -173,25 +174,22 @@ def main():
     clear_screen()
     print(ASCII_ART)
     
-    # Iniciar Loop Asíncrono
     new_loop = asyncio.new_event_loop()
     BROWSER_INSTANCE["loop"] = new_loop
     t = threading.Thread(target=start_background_loop, args=(new_loop,), daemon=True)
     t.start()
     
-    # Arrancar navegador base
+    print("[*] Arrancando Chrome (NO LO CIERRES)...")
     asyncio.run_coroutine_threadsafe(iniciar_motor_base(), new_loop)
-    time.sleep(3) # Esperar a que chrome arranque
+    time.sleep(3) 
 
     print("\n[ Seleccione Entorno ]")
-    print("1. Modo API (Para conectar con otros soft)")
+    print("1. Modo API")
     print("2. Chat Consola")
     
     op = input("\n> Opción: ")
     if op == "1":
-        host = "0.0.0.0" 
-        print(f"[*] API corriendo en puerto 5000.")
-        app.run(host=host, port=5000, debug=False, use_reloader=False)
+        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
     else:
         run_interactive_shell()
 
