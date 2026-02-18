@@ -16,9 +16,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($res && mysqli_num_rows($res) > 0) {
         $row = mysqli_fetch_assoc($res);
+        
+        // ESTAS LÍNEAS SON VITALES:
         $_SESSION['user_id'] = $row['id'];
         $_SESSION['username'] = $row['username'];
-        header('Location: index.php');
+        $_SESSION['role'] = $row['role']; // Guardamos el rol para mostrarlo
+
+        // Redirigir al nuevo dashboard en lugar del index
+        header('Location: dashboard.php'); 
         exit;
     } else {
         $error = 'Usuario o clave incorrectos.';
