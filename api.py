@@ -2,8 +2,8 @@ import asyncio
 import threading
 import time
 import os
+import random
 import socket
-import platform
 from flask import Flask, request, jsonify
 from playwright.async_api import async_playwright
 
@@ -12,28 +12,33 @@ ASCII_ART = r"""
     ┌──────────────────────────────────────────────────────────────────────────┐
     │   _______   _______   ___   _______   __   __   _______   __    _        │
     │  |       | |       | |   | |       | |  | |  | |       | |  |  | |       │
-    │   >> UNHACKERENCAPITAL | FLOWGPT BYPASS | STRICT FILTER v6.2 <<          │
+    │   >> UNHACKERENCAPITAL | FLOWGPT BYPASS | GHOST PROTOCOL v7.0 <<         │
     └──────────────────────────────────────────────────────────────────────────┘
 """
 app = Flask(__name__)
 API_KEY_GATEWAY = "UnHackerEnCapital"
-
 TARGET_URL = "https://flowgpt.com/chat/wormgpt-6"
 CHAT_MEMORY = [] 
 
-# --- LISTA NEGRA DE FRASES (Mensaje de Bienvenida) ---
-# Si el script lee esto, sabrá que aún NO ha respondido la IA.
-IGNORE_PHRASES = [
-    "You are using the WormGPT",
-    "Never need pay for WormGPT",
-    "start with your fist need",
-    "fully uncensored",
-    "digital landscape"
+# --- CONFIGURACIÓN DE RED (CAMBIO DE IP) ---
+# Si tienes Tor Browser abierto, usa: "socks5://127.0.0.1:9150"
+# Si no usas proxy, déjalo en None (pero te detectarán la IP si abusas)
+PROXY_CONFIG = None 
+# PROXY_CONFIG = {"server": "socks5://127.0.0.1:9150"} # Descomentar para usar TOR
+
+# Lista de User-Agents para rotar identidad
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
 
+IGNORE_PHRASES = ["Never need pay", "start with your fist need", "You are using"]
+
 BROWSER_INSTANCE = {
-    "browser": None,
     "playwright": None,
+    "browser": None, # Navegador base
     "loop": None,
     "lock": threading.Lock()
 }
@@ -44,85 +49,98 @@ def clear_screen():
 # --- MOTOR DE NAVEGACIÓN ---
 async def iniciar_motor_base():
     p = await async_playwright().start()
-    browser = await p.chromium.launch(headless=False) 
+    
+    # Lanzamos el navegador base.
+    # Si usamos Proxy, lo configuramos aquí.
+    launch_args = ["--disable-blink-features=AutomationControlled"]
+    
+    browser = await p.chromium.launch(
+        headless=False, 
+        proxy=PROXY_CONFIG, # Aquí se inyecta el cambio de IP
+        args=launch_args
+    ) 
+    
     BROWSER_INSTANCE["playwright"] = p
     BROWSER_INSTANCE["browser"] = browser
-    print("[*] Motor Chromium listo. Esperando peticiones...")
+    print(f"[*] Motor Ghost listo. Proxy activo: {PROXY_CONFIG if PROXY_CONFIG else 'NO (Usando IP real)'}")
 
 async def procesar_mensaje_con_bypass(mensaje_usuario):
     browser = BROWSER_INSTANCE["browser"]
     if not browser: return "Error: Motor no iniciado."
 
+    # 1. GENERAR IDENTIDAD FALSA (Randomizar Fingerprint)
+    ua_random = random.choice(USER_AGENTS)
+    viewport_random = {'width': 1280 + random.randint(0, 100), 'height': 720 + random.randint(0, 100)}
+    
     context = await browser.new_context(
-        viewport={'width': 1280, 'height': 720},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        viewport=viewport_random,
+        user_agent=ua_random,
+        locale="en-US",
+        timezone_id="America/New_York" # Disfrazar zona horaria
     )
+    
+    # 2. INYECTAR STEALTH (Ocultar que somos un bot)
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
+    """)
+
     page = await context.new_page()
 
     try:
-        # 1. Navegar
-        await page.goto(TARGET_URL, timeout=60000)
+        # 3. NAVEGAR (Con IP cambiada si se configuró Proxy)
+        # print(f"[*] Identidad: {ua_random[:30]}...")
+        await page.goto(TARGET_URL, timeout=90000) # Timeout largo por si usas Tor
         
-        # 2. Esperar carga inicial y "asegurar" que el mensaje de bienvenida ya esté ahí
-        await page.wait_for_selector("textarea", timeout=30000)
-        # Pequeña pausa para asegurar que el DOM del mensaje de bienvenida terminó de pintarse
-        await asyncio.sleep(2) 
+        # Espera de seguridad
+        await page.wait_for_selector("textarea", timeout=40000)
+        await asyncio.sleep(2)
 
-        # 3. Preparar Prompt con Memoria
+        # 4. PREPARAR MEMORIA
         prompt_final = ""
         if len(CHAT_MEMORY) > 0:
-            historial_txt = "\n".join([f"User: {m['user']}\nYou: {m['bot']}" for m in CHAT_MEMORY[-2:]]) 
-            prompt_final = f"(System: Continue conversation. Context:\n{historial_txt})\n\nUser: {mensaje_usuario}"
+            historial_txt = "\n".join([f"U: {m['user']}\nB: {m['bot']}" for m in CHAT_MEMORY[-2:]]) 
+            prompt_final = f"(SYSTEM: PREVIOUS CONTEXT:\n{historial_txt})\n\nUSER QUERY: {mensaje_usuario}"
         else:
             prompt_final = mensaje_usuario
 
-        # 4. Enviar Mensaje
+        # 5. ENVIAR
         await page.click("textarea")
         await page.fill("textarea", prompt_final)
         await page.keyboard.press("Enter")
 
-        # 5. ESPERA INTELIGENTE CON FILTRO DE CONTENIDO
-        print("... Esperando respuesta válida ...")
+        # 6. ESPERA INTELIGENTE
+        print("... Ghost esperando respuesta ...")
         
-        max_retries = 40 
+        max_retries = 60
         respuesta_final = ""
         
         for _ in range(max_retries):
             await asyncio.sleep(1)
             
-            # Buscamos TODOS los mensajes markdown
-            elementos = page.locator(".flowgpt-markdown")
-            count = await elementos.count()
+            # Verificación de baneo visual
+            if await page.locator("text=Out of free credits").is_visible():
+                print("[!] ALERTA: IP Quemada. Reinicia tu router o cambia de nodo Tor.")
+                await context.close()
+                return "Error: IP BANEADA. Cambia tu IP."
+
+            msgs = page.locator(".flowgpt-markdown")
+            count = await msgs.count()
             
             if count > 0:
-                # Tomamos siempre el ÚLTIMO mensaje visible
-                ultimo_elemento = elementos.nth(count - 1)
-                texto_actual = await ultimo_elemento.inner_text()
+                ultimo = msgs.nth(count - 1)
+                texto = await ultimo.inner_text()
                 
-                # --- FILTRO ESTRICTO ---
-                # Verificamos si el texto actual contiene alguna frase prohibida (la bienvenida)
-                es_bienvenida = False
-                for frase in IGNORE_PHRASES:
-                    if frase in texto_actual:
-                        es_bienvenida = True
-                        break
+                # Filtro de bienvenida
+                es_basura = False
+                for f in IGNORE_PHRASES:
+                    if f in texto: es_basura = True; break
                 
-                if es_bienvenida:
-                    # Es el mensaje de bienvenida, seguimos esperando
-                    # print("Ignorando mensaje de bienvenida...")
-                    continue
-                
-                if not texto_actual.strip():
-                    # Está vacío (cargando), seguimos esperando
-                    continue
-
-                # Si llegamos aquí, NO es bienvenida y NO está vacío -> ES LA RESPUESTA
-                # Esperamos un poco más por si está escribiendo (streaming)
-                await asyncio.sleep(2)
-                
-                # Volvemos a leer por si cambió durante los 2 segundos
-                respuesta_final = await ultimo_elemento.inner_text()
-                break
+                if not es_basura and texto.strip():
+                    await asyncio.sleep(2)
+                    respuesta_final = await ultimo.inner_text()
+                    break
         
         if respuesta_final:
             CHAT_MEMORY.append({"user": mensaje_usuario, "bot": respuesta_final})
@@ -130,59 +148,54 @@ async def procesar_mensaje_con_bypass(mensaje_usuario):
             return respuesta_final
         else:
             await context.close()
-            return "Error: Timeout (Solo se encontró el mensaje de bienvenida o nada)."
+            return "Error: Timeout o Bloqueo silencioso."
 
     except Exception as e:
         await context.close()
-        return f"Error en bypass: {str(e)}"
+        return f"Error Ghost: {str(e)}"
 
-# --- GESTOR DE HILOS ---
-def start_background_loop(loop):
+# --- ARRANQUE ---
+def start_loop(loop):
     asyncio.set_event_loop(loop)
     loop.run_forever()
 
-def ejecutar_request(user_query):
-    future = asyncio.run_coroutine_threadsafe(procesar_mensaje_con_bypass(user_query), BROWSER_INSTANCE["loop"])
-    try:
-        return future.result(timeout=120)
-    except Exception as e:
-        return f"Timeout: {e}"
+def ejecutar_request(txt):
+    future = asyncio.run_coroutine_threadsafe(procesar_mensaje_con_bypass(txt), BROWSER_INSTANCE["loop"])
+    try: return future.result(timeout=120)
+    except: return "Timeout crítico"
 
 @app.route('/v1/chat/completions', methods=['POST'])
-def apithon_gateway():
-    auth_header = request.headers.get("Authorization")
-    if auth_header != f"Bearer {API_KEY_GATEWAY}":
-        return jsonify({"error": "Unauthorized"}), 401
-    user_input = request.json.get("messages", [{}])[-1].get("content", "")
-    output_text = ejecutar_request(user_input)
-    return jsonify({"choices": [{"message": {"role": "assistant", "content": output_text}}], "model": "flowgpt-bypass-v6.2"})
+def api():
+    txt = request.json.get("messages", [{}])[-1].get("content", "")
+    return jsonify({"choices": [{"message": {"role": "assistant", "content": ejecutar_request(txt)}}]})
 
-def run_interactive_shell():
-    print("\n[+] MODO CHAT v6.2 (Filtro Anti-Bienvenida).")
+def shell():
+    print("\n[+] MODO GHOST v7.0 (Anti-Fingerprint).")
     while True:
-        user_input = input("\n👤 Tú: ")
-        if user_input.lower() in ['salir', 'exit']: break
-        print("⏳ Enviando...", end="", flush=True)
-        resp = ejecutar_request(user_input)
-        print(f"\r🤖 WormGPT: {resp}")
+        u = input("\n👤 Tú: ")
+        if u == 'exit': break
+        print(f"\r🤖 WormGPT: {ejecutar_request(u)}")
 
 def main():
     clear_screen()
     print(ASCII_ART)
-    new_loop = asyncio.new_event_loop()
-    BROWSER_INSTANCE["loop"] = new_loop
-    t = threading.Thread(target=start_background_loop, args=(new_loop,), daemon=True)
-    t.start()
-    asyncio.run_coroutine_threadsafe(iniciar_motor_base(), new_loop)
-    time.sleep(3) 
-
-    print("\n[ Seleccione Entorno ]")
-    print("1. Modo API")
-    print("2. Chat Consola")
-    op = input("\n> Opción: ")
-    if op == "1": app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
-    else: run_interactive_shell()
+    
+    # --- INSTRUCCIONES DE IP ---
+    print("┌────────────────────────────────────────────────────────┐")
+    print("│ PARA QUE ESTO FUNCIONE SIN LÍMITES, NECESITAS TOR:     │")
+    print("│ 1. Descarga e instala Tor Browser.                     │")
+    print("│ 2. Ábrelo y déjalo conectado en el fondo.              │")
+    print("│ 3. Descomenta la línea 'PROXY_CONFIG' en el script.    │")
+    print("└────────────────────────────────────────────────────────┘")
+    
+    loop = asyncio.new_event_loop()
+    BROWSER_INSTANCE["loop"] = loop
+    threading.Thread(target=start_loop, args=(loop,), daemon=True).start()
+    asyncio.run_coroutine_threadsafe(iniciar_motor_base(), loop)
+    time.sleep(3)
+    
+    shell()
 
 if __name__ == "__main__":
     try: main()
-    except KeyboardInterrupt: print("\n[!] Fin.")
+    except: pass
