@@ -259,4 +259,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n[!] Proceso finalizado.")
+        print("\n[!] Proceso finalizadoasd.")
