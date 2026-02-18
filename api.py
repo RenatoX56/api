@@ -3,7 +3,7 @@ import threading
 import time
 import os
 import random
-import json
+import socket
 from flask import Flask, request, jsonify
 from playwright.async_api import async_playwright
 
@@ -12,15 +12,15 @@ ASCII_ART = r"""
     ┌──────────────────────────────────────────────────────────────────────────┐
     │   _______   _______   ___   _______   __   __   _______   __    _        │
     │  |       | |       | |   | |       | |  | |  | |       | |  |  | |       │
-    │   >> FLOWGPT BYPASS | HYDRA PROTOCOL v9.0 | TOR + FINGERPRINT SPOOF <<   │
+    │   >> HYDRA PROTOCOL v9.1 | TOR AUTO-DETECT | PROXY TUNNEL <<             │
     └──────────────────────────────────────────────────────────────────────────┘
 """
 app = Flask(__name__)
 API_KEY_GATEWAY = "UnHackerEnCapital"
 TARGET_URL = "https://flowgpt.com/chat/wormgpt-6"
 
-# PUERTOS DE TOR (Generalmente 9150 para Tor Browser, 9050 para servicio Tor)
-PROXY_TOR = "socks5://127.0.0.1:9150" 
+# Variable global para guardar el puerto detectado
+TOR_PORT = None 
 
 BROWSER_INSTANCE = {
     "playwright": None,
@@ -28,167 +28,131 @@ BROWSER_INSTANCE = {
     "loop": None
 }
 
-# Lista de frases para ignorar (Bienvenida)
 IGNORE_PHRASES = ["Never need pay", "start with your fist", "You are using"]
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# --- INYECCIÓN DE STEALTH (SPOOFING DE HARDWARE) ---
-# Este script JS se inyecta en el navegador para mentir sobre qué PC eres.
+# --- DETECTOR DE PUERTO TOR ---
+def encontrar_puerto_tor():
+    """Busca si Tor está corriendo en el puerto 9150 (Browser) o 9050 (Servicio)"""
+    for puerto in [9150, 9050]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
+            if s.connect_ex(('127.0.0.1', puerto)) == 0:
+                return puerto
+    return None
+
+# --- STEALTH JS (Anti-Fingerprint) ---
 STEALTH_JS = """
 (() => {
-    // 1. Eliminar rastro de automatización
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    
-    // 2. Falsificar Plugins (Para parecer humano)
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    
-    // 3. Falsificar Hardware (WebGL Fingerprint)
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        // Spoof Vendor
-        if (parameter === 37445) return 'Intel Inc.'; 
-        // Spoof Renderer (Randomizado ligeramente por sesión)
-        if (parameter === 37446) return 'Intel Iris OpenGL Engine'; 
+        if (parameter === 37445) return 'Google Inc. (Intel)'; 
+        if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)'; 
         return getParameter(parameter);
     };
-    
-    // 4. Falsificar Idiomas
-    Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en']
-    });
 })();
 """
 
-# --- MOTOR DE NAVEGACIÓN ---
+# --- MOTOR ---
 async def iniciar_motor_base():
-    """Inicia el navegador SIN contexto. El contexto se crea por petición."""
     p = await async_playwright().start()
     
-    # Lanzamos el navegador en modo Headless (Oculto) o Visible.
-    # Usamos argumentos para deshabilitar características de bot.
+    # Argumentos para evitar detección básica
     args = [
         '--disable-blink-features=AutomationControlled',
         '--no-sandbox',
-        '--disable-infobars',
-        '--disable-dev-shm-usage',
-        '--disable-browser-side-navigation',
-        '--disable-gpu'
+        '--disable-infobars'
     ]
     
+    # Lanzamos el navegador SIN proxy global (se configura por contexto)
     browser = await p.chromium.launch(headless=False, args=args)
     BROWSER_INSTANCE["playwright"] = p
     BROWSER_INSTANCE["browser"] = browser
-    print(f"[*] Hydra Motor listo. Conectado a TOR: {PROXY_TOR}")
-
-async def obtener_ip_actual(page):
-    """Verifica si estamos saliendo por Tor."""
-    try:
-        await page.goto("http://checkip.amazonaws.com", timeout=10000)
-        ip = await page.inner_text("body")
-        return ip.strip()
-    except:
-        return "Desconocida (Error Check)"
+    print(f"[*] Motor Base Listo. Esperando inyección de tráfico por puerto {TOR_PORT}...")
 
 async def procesar_mensaje_hydra(mensaje_usuario):
     browser = BROWSER_INSTANCE["browser"]
     if not browser: return "Error: Motor no iniciado."
 
-    # 1. GENERACIÓN DE IDENTIDAD ÚNICA
-    # Cada petición tendrá una resolución, UA y zona horaria distinta.
-    ua_list = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/110.0"
-    ]
-    ua_random = random.choice(ua_list)
+    # Configurar el túnel TOR
+    proxy_settings = {"server": f"socks5://127.0.0.1:{TOR_PORT}"}
     
-    # Configuración del Proxy (TOR) para este contexto específico
-    # Esto asegura que la IP se enmascare.
+    # Identidad Aleatoria
+    ua_list = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    ]
+    
     context = await browser.new_context(
-        proxy={"server": PROXY_TOR}, 
-        user_agent=ua_random,
-        viewport={'width': 1366 + random.randint(-50, 50), 'height': 768 + random.randint(-50, 50)},
+        proxy=proxy_settings,  # <--- AQUÍ SE FUERZA EL USO DE TOR
+        user_agent=random.choice(ua_list),
+        viewport={'width': 1280 + random.randint(0, 50), 'height': 720 + random.randint(0, 50)},
         locale="en-US",
-        timezone_id="America/New_York",
-        java_script_enabled=True
+        timezone_id="America/New_York"
     )
     
-    # Inyectar script anti-huella
     await context.add_init_script(STEALTH_JS)
-
     page = await context.new_page()
 
     try:
-        # 2. VALIDACIÓN DE SEGURIDAD (Opcional, para debug)
-        # print(f"[*] Identidad Nueva. UA: {ua_random[:20]}...")
+        # Navegar
+        # print(f"[*] Conectando vía Tor (Puerto {TOR_PORT})...")
+        await page.goto(TARGET_URL, timeout=120000) # Timeout largo para Tor
         
-        # 3. NAVEGACIÓN AL OBJETIVO
-        # Timeout alto porque Tor es lento
-        await page.goto(TARGET_URL, timeout=90000, wait_until="domcontentloaded")
-        
-        # Esperar textarea
         try:
-            await page.wait_for_selector("textarea", timeout=45000)
-        except Exception:
+            await page.wait_for_selector("textarea", timeout=60000)
+        except:
             await context.close()
-            return "Error: Timeout cargando FlowGPT (Tor puede estar muy lento)."
+            return "Error: Timeout. La red Tor está muy lenta o desconectada."
 
-        # Contar mensajes previos (Bienvenida)
         count_inicial = await page.locator(".flowgpt-markdown").count()
 
-        # 4. ENVIAR MENSAJE
+        # Enviar
         await page.click("textarea")
-        # Pequeña pausa humana
-        await asyncio.sleep(random.uniform(0.5, 1.5)) 
+        await asyncio.sleep(1)
         await page.fill("textarea", mensaje_usuario)
         await page.keyboard.press("Enter")
 
-        print("... Hydra esperando respuesta a través de Tor ...")
-
-        # 5. ESPERA Y DETECCIÓN DE ERRORES
-        respuesta_final = ""
-        max_retries = 60 # Tor es lento, damos 60s
+        # Esperar respuesta
+        print("... Hydra esperando respuesta (vía Tor) ...")
+        respuesta = ""
         
-        for _ in range(max_retries):
+        # Bucle de espera (hasta 60s)
+        for _ in range(60):
             await asyncio.sleep(1)
             
-            # Verificar Bloqueo
+            # Verificar si nos bloquearon la IP
             if await page.locator("text=Out of free credits").is_visible():
-                print("[!] IP DE TOR QUEMADA. Reinicia identidad en Tor Browser (Ctrl+Shift+L).")
+                print("[!] IP QUEMADA. Pide nueva identidad en Tor Browser.")
                 await context.close()
-                return "Error: IP Bloqueada por FlowGPT. Solicita 'New Identity' en Tor Browser."
+                return "Error: IP Baneada. Cambia identidad en Tor."
 
-            # Verificar Respuesta
             count_actual = await page.locator(".flowgpt-markdown").count()
             
             if count_actual > count_inicial:
-                # Esperar renderizado
-                await asyncio.sleep(3)
-                
+                await asyncio.sleep(3) # Dejar que termine de escribir
                 ultimo = page.locator(".flowgpt-markdown").nth(count_actual - 1)
                 texto = await ultimo.inner_text()
                 
-                # Filtro de bienvenida (Por si acaso)
+                # Verificar filtro
                 es_valido = True
                 for f in IGNORE_PHRASES:
                     if f in texto: es_valido = False
                 
                 if es_valido and len(texto) > 1:
-                    respuesta_final = texto
+                    respuesta = texto
                     break
         
         await context.close()
-        
-        if respuesta_final:
-            return respuesta_final
-        else:
-            return "Error: Timeout (Sin respuesta)."
+        return respuesta if respuesta else "Error: Sin respuesta (Timeout)"
 
     except Exception as e:
         await context.close()
-        return f"Error Hydra: {str(e)}"
+        return f"Error Técnico: {str(e)}"
 
 # --- ARRANQUE ---
 def start_loop(loop):
@@ -197,7 +161,7 @@ def start_loop(loop):
 
 def ejecutar_request(txt):
     future = asyncio.run_coroutine_threadsafe(procesar_mensaje_hydra(txt), BROWSER_INSTANCE["loop"])
-    try: return future.result(timeout=150) # Timeout largo para Tor
+    try: return future.result(timeout=180)
     except: return "Timeout General"
 
 @app.route('/v1/chat/completions', methods=['POST'])
@@ -206,8 +170,8 @@ def api():
     return jsonify({"choices": [{"message": {"role": "assistant", "content": ejecutar_request(txt)}}]})
 
 def shell():
-    print("\n[+] MODO HYDRA (TOR ACTIVO).")
-    print("[-] Si falla, presiona 'New Identity' en tu Tor Browser.")
+    print(f"\n[+] SISTEMA ONLINE usando TOR en puerto {TOR_PORT}.")
+    print("[*] Chromium se abrirá, pero su tráfico viaja oculto por Tor.")
     while True:
         u = input("\n👤 Tú: ")
         if u == 'exit': break
@@ -215,12 +179,23 @@ def shell():
         print(f"\r🤖 WormGPT: {resp}")
 
 def main():
+    global TOR_PORT
     clear_screen()
     print(ASCII_ART)
-    print("┌────────────────────────────────────────────────────────┐")
-    print("│ ¡ATENCIÓN! ESTE SCRIPT REQUIERE TOR BROWSER ABIERTO    │")
-    print("│ Puerto esperado: 9150 (Default de Tor Browser)         │")
-    print("└────────────────────────────────────────────────────────┘")
+    
+    print("[*] Buscando Tor Browser...")
+    TOR_PORT = encontrar_puerto_tor()
+    
+    if TOR_PORT is None:
+        print("\n[!!!] ERROR CRÍTICO: NO SE ENCUENTRA TOR [!!!]")
+        print("1. Abre 'Tor Browser' en tu PC.")
+        print("2. Espera a que se conecte (página violeta).")
+        print("3. Vuelve a ejecutar este script.")
+        print("------------------------------------------------")
+        input("Presiona Enter para salir...")
+        return
+
+    print(f"[OK] Tor detectado en puerto {TOR_PORT}.")
     
     loop = asyncio.new_event_loop()
     BROWSER_INSTANCE["loop"] = loop
